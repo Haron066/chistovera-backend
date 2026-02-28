@@ -1,0 +1,13 @@
+{
+  "name": "chistovera-backend",
+  "version": "1.0.0",
+  "description": "Backend for ChistoVera Bot",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.61.0",
+    "@supabase/supabase-js": "^2.39.0"
+  }
+}
