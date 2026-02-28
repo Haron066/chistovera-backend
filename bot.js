@@ -2,7 +2,7 @@ const { createClient } = require('@supabase/supabase-js');
 const TelegramBot = require('node-telegram-bot-api');
 
 // Твои данные
-const token = 'ТВОЙ_ТОКЕН_БОТА_ОТ_BOTFATHER';
+const token = '8270034848:AAF9wQm0meVJ1jeflutjZfOO3OTG-_3QLfk';
 const adminId = '593064482';
 const supabaseUrl = 'https://gpreejfftspjqarthpfp.supabase.co';
 const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'; // Твой анон кей
