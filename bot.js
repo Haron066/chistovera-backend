@@ -40,41 +40,63 @@ bot.onText(/\/start/, (msg) => {
 // 3. ФУНКЦИЯ ПРОВЕРКИ РАСПИСАНИЯ И СБРОСОВ (Раз в минуту)
 setInterval(async () => {
     try {
+        // Получаем текущую дату и время
         const now = new Date();
-        // Настройка времени по Москве (Ингушетия живет по МСК)
-        const moscowTime = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
         
+        // --- А. УВЕДОМЛЕНИЯ ЗА 30 МИНУТ ---
+        // Прибавляем ровно 30 минут к текущему времени
+        const targetDate = new Date(now.getTime() + 30 * 60000);
+        
+        // Форматируем время в ЧЧ:ММ жестко по часовому поясу Москвы (Ингушетия)
+        const targetTimeStr = targetDate.toLocaleTimeString('ru-RU', {
+            timeZone: 'Europe/Moscow',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+
+        // Получаем сегодняшнюю дату в формате YYYY-MM-DD для проверки подписки
+        const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
+
+        // Ищем в базе людей, у которых schedule совпадает с (Текущее время + 30 минут)
+        const { data: clientsToRemind } = await supabase
+            .from('clients')
+            .select('*')
+            .eq('schedule', targetTimeStr)
+            .neq('sub_type', 'none'); // Только те, у кого есть подписка
+
+        if (clientsToRemind && clientsToRemind.length > 0) {
+            for (const client of clientsToRemind) {
+                // 1. Проверяем, не истекла ли подписка
+                if (client.sub_end_date && client.sub_end_date < todayStr) {
+                    continue; // Пропускаем этого клиента, подписка кончилась
+                }
+                
+                // 2. Проверяем, не выставил ли он мусор УЖЕ
+                if (client.trash_out_today) {
+                    continue; // Пропускаем, он уже нажал кнопку
+                }
+
+                // Отправляем уведомление
+                const msgText = `🔔 <b>Напоминание от ЧистоВера!</b>\n\nЧерез 30 минут (в ${client.schedule}) приедет курьер за вашим мусором.\n\nПожалуйста, выставьте пакеты за дверь, зайдите в приложение и нажмите кнопку <b>«Выставил пакеты»</b>.`;
+                
+                await bot.sendMessage(client.tg_id, msgText, { parse_mode: 'HTML' });
+                console.log(`Уведомление за 30 мин отправлено клиенту: ${client.tg_id}`);
+            }
+        }
+
+        // --- Б. ЕЖЕДНЕВНЫЙ СБРОС СТАТУСОВ ---
+        // Получаем текущее время по Москве для полуночи
+        const moscowTime = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
         const hrs = moscowTime.getHours();
         const mins = moscowTime.getMinutes();
         const day = moscowTime.getDay(); // 0 - воскресенье, 1 - понедельник
-        const currentTimeString = hrs.toString().padStart(2, '0') + ":" + mins.toString().padStart(2, '0');
 
-        // --- А. УВЕДОМЛЕНИЕ КЛИЕНТА ЗА 30 МИНУТ ---
-        // Рассчитываем время, которое будет через 30 минут
-        const remindTime = new Date(moscowTime.getTime() + 30 * 60000);
-        const remindTimeString = remindTime.getHours().toString().padStart(2, '0') + ":" + 
-                                 remindTime.getMinutes().toString().padStart(2, '0');
-
-        const { data: toRemind } = await supabase
-            .from('clients')
-            .select('tg_id, schedule, sub_type')
-            .eq('schedule', remindTimeString)
-            .neq('sub_type', 'none'); // Только тем, у кого есть подписка
-
-        if (toRemind && toRemind.length > 0) {
-            for (const client of toRemind) {
-                await bot.sendMessage(client.tg_id, `🔔 ЧистоВера напоминает:\n\nЧерез 30 минут (${client.schedule}) время выноса мусора по вашему графику.\n\nПожалуйста, выставите пакеты за дверь и отметьте это в приложении! ✨`);
-            }
-            console.log(`Отправлено напоминаний: ${toRemind.length} на время ${remindTimeString}`);
-        }
-
-        // --- Б. ЕЖЕДНЕВНЫЙ СБРОС СТАТУСА (В полночь 00:00) ---
         if (hrs === 0 && mins === 0) {
             await supabase
                 .from('clients')
                 .update({ trash_out_today: false })
                 .neq('tg_id', '0');
-            console.log("Ежедневный статус кнопок сброшен");
+            console.log("Ежедневный статус кнопок сброшен (Полночь)");
 
             // --- В. ЕЖЕНЕДЕЛЬНЫЙ СБРОС ЛИМИТОВ (Понедельник 00:00) ---
             if (day === 1) { 
@@ -89,7 +111,7 @@ setInterval(async () => {
     } catch (e) {
         console.error("Системная ошибка в таймере:", e.message);
     }
-}, 60000); // Проверка каждую минуту
+}, 60000); // Проверка запускается ровно каждые 60 секунд
 
 // Обработка ошибок бота, чтобы он не выключался
 bot.on('polling_error', (error) => {
