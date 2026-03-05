@@ -3,10 +3,8 @@ const TelegramBot = require('node-telegram-bot-api');
 const express = require('express');
 
 // --- КОНФИГУРАЦИЯ ---
-const token = process.env.BOT_TOKEN || '8270034848:AAF9wQm0meVJ1jeflutjZfOO3OTG-_3QLfk'; // Токен бота
+const token = (process.env.BOT_TOKEN || '8270034848:AAF9wQm0meVJ1jeflutjZfOO3OTG-_3QLfk').trim();
 const adminId = '593064482';
-
-// ⚠️ ВАЖНО: ВСТАВЬ СЮДА СВОЮ ССЫЛКУ ИЗ RENDER (БЕЗ СЛЕША / В КОНЦЕ)
 const RENDER_URL = process.env.RENDER_EXTERNAL_URL || 'https://chistovera-backend.onrender.com'; 
 
 const supabaseUrl = 'https://gpreejfftspjqarthpfp.supabase.co';
@@ -14,27 +12,22 @@ const supabaseKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS
 
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// Создаем бота БЕЗ polling: true
 const bot = new TelegramBot(token); 
 const app = express();
 app.use(express.json());
 
-// Устанавливаем Webhook
 bot.setWebHook(`${RENDER_URL}/bot${token}`);
 console.log(`Webhook установлен на: ${RENDER_URL}/bot${token}`);
 
-// Принимаем запросы от Телеграма
 app.post(`/bot${token}`, (req, res) => {
     bot.processUpdate(req.body);
     res.sendStatus(200);
 });
 
-// Страница для "Будильника" (чтобы бот не засыпал)
 app.get('/', (req, res) => {
     res.send('ЧистоВера Webhook Бот работает 24/7!');
 });
 
-// Запуск сервера
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Сервер запущен на порту ${PORT}`);
@@ -44,7 +37,6 @@ app.listen(PORT, () => {
 // ЛОГИКА БОТА
 // ==========================================
 
-// 1. ПРИЕМ ДАННЫХ ИЗ ПРИЛОЖЕНИЯ
 bot.on('web_app_data', async (msg) => {
     try {
         const data = msg.web_app_data.data;
@@ -54,10 +46,67 @@ bot.on('web_app_data', async (msg) => {
     }
 });
 
-// 2. КОМАНДА /START
 bot.onText(/\/start/, (msg) => {
     bot.sendMessage(msg.chat.id, `Привет, ${msg.from.first_name}! 🌸\n\nДобро пожаловать в сервис "ЧистоВера".\nМы берем на себя заботу о чистоте вашего дома.\n\nИспользуйте кнопку меню ниже, чтобы открыть приложение.`);
 });
+
+// ==========================================
+// ОБРАБОТЧИК КНОПОК В ЧАТЕ (НОВОЕ)
+// ==========================================
+bot.on('callback_query', async (query) => {
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const data = query.data; // 'trash_yes' или 'trash_no'
+    const tgId = String(query.from.id);
+
+    try {
+        // Достаем клиента из базы
+        const { data: client } = await supabase.from('clients').select('*').eq('tg_id', tgId).single();
+        if (!client) return bot.answerCallbackQuery(query.id, { text: "Пользователь не найден!" });
+
+        // Если клиент нажал "Да, выставил"
+        if (data === 'trash_yes') {
+            // Проверка лимита (если тариф 5 дней)
+            if (client.sub_type === '5days' && client.weekly_clicks >= 5) {
+                bot.answerCallbackQuery(query.id, { text: "⚠️ Ваш лимит (5 из 5) на этой неделе исчерпан!", show_alert: true });
+                return;
+            }
+
+            // Обновляем базу: ставим галочку и добавляем +1 к кликам
+            const newClicks = client.weekly_clicks + 1;
+            await supabase.from('clients').update({ trash_out_today: true, weekly_clicks: newClicks }).eq('tg_id', tgId);
+
+            // Меняем текст сообщения и убираем кнопки
+            await bot.editMessageText(`✅ **Принято!** Курьер заедет за вашими пакетами.`, {
+                chat_id: chatId,
+                message_id: messageId,
+                parse_mode: 'Markdown'
+            });
+
+            // Отвечаем Телеграму, что клик обработан
+            bot.answerCallbackQuery(query.id);
+
+            // Отправляем уведомление Админу
+            bot.sendMessage(adminId, `🔔 ВЫСТАВИЛ МУСОР (Из чата):\n📍 ${client.address}\n👤 ${client.name}`);
+        } 
+        
+        // Если клиент нажал "Нет мусора"
+        else if (data === 'trash_no') {
+            // Ничего не меняем в лимитах, просто убираем кнопки
+            await bot.editMessageText(`❌ **Поняли вас!** Сегодня курьер к вам не заезжает. Хорошего вечера!`, {
+                chat_id: chatId,
+                message_id: messageId,
+                parse_mode: 'Markdown'
+            });
+            bot.answerCallbackQuery(query.id);
+        }
+
+    } catch (e) {
+        console.error("Ошибка обработки кнопки:", e.message);
+        bot.answerCallbackQuery(query.id, { text: "Произошла ошибка. Попробуйте через приложение." });
+    }
+});
+
 
 // ==========================================
 // ТАЙМЕР (УВЕДОМЛЕНИЯ ЗА 30 МИНУТ)
@@ -87,15 +136,31 @@ setInterval(async () => {
                 if (client.trash_out_today) continue;
                 if (client.sub_type === '5days' && client.weekly_clicks >= 5) continue;
 
-                const msgText = `🔔 <b>Напоминание от ЧистоВера!</b>\n\nЧерез 30 минут (в ${client.schedule}) приедет курьер за вашим мусором, если вы нажмете что выставили в приложении.\n\nПожалуйста, выставьте пакеты за дверь, зайдите в приложение и нажмите кнопку <b>«Выставил пакеты»</b>.`;
-                await bot.sendMessage(client.tg_id, msgText, { parse_mode: 'HTML' });
+                const msgText = `🔔 <b>Напоминание от ЧистоВера!</b>\n\nЧерез 30 минут (в ${client.schedule}) приедет курьер за вашим мусором.\n\nПожалуйста, выставьте пакеты за дверь и нажмите кнопку ниже:`;
+                
+                // === ДОБАВЛЯЕМ КНОПКИ К СООБЩЕНИЮ ===
+                const keyboard = {
+                    inline_keyboard: [
+                        [
+                            { text: '✅ Выставил пакеты', callback_data: 'trash_yes' }
+                        ],
+                        [
+                            { text: '❌ Сегодня без мусора', callback_data: 'trash_no' }
+                        ]
+                    ]
+                };
+
+                await bot.sendMessage(client.tg_id, msgText, { 
+                    parse_mode: 'HTML',
+                    reply_markup: JSON.stringify(keyboard) // Прикрепляем кнопки
+                });
             }
         }
 
         // СБРОС СТАТУСОВ (Полночь)
         const moscowTime = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
         if (moscowTime.getHours() === 0 && moscowTime.getMinutes() === 0) {
-            await supabase.from('clients').update({ trash_out_today: false }).neq('tg_id', '0');
+            await supabase.from('clients').update({ trash_out_today: false, trash_not_found: false }).neq('tg_id', '0');
             if (moscowTime.getDay() === 1) { 
                 await supabase.from('clients').update({ weekly_clicks: 0 }).eq('sub_type', '5days');
             }
