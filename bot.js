@@ -87,7 +87,7 @@ setInterval(async () => {
                 if (client.trash_out_today) continue;
                 if (client.sub_type === '5days' && client.weekly_clicks >= 5) continue;
 
-                const msgText = `🔔 <b>Напоминание от ЧистоВера!</b>\n\nЧерез 30 минут (в ${client.schedule}) приедет курьер за вашим мусором.\n\nПожалуйста, выставьте пакеты за дверь, зайдите в приложение и нажмите кнопку <b>«Выставил пакеты»</b>.`;
+                const msgText = `🔔 <b>Напоминание от ЧистоВера!</b>\n\nЧерез 30 минут (в ${client.schedule}) приедет курьер за вашим мусором, если вы нажмете что выставили в приложении.\n\nПожалуйста, выставьте пакеты за дверь, зайдите в приложение и нажмите кнопку <b>«Выставил пакеты»</b>.`;
                 await bot.sendMessage(client.tg_id, msgText, { parse_mode: 'HTML' });
             }
         }
