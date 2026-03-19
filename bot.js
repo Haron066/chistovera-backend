@@ -37,7 +37,6 @@ app.get('/', (req, res) => {
     res.send('ЧистоВера Webhook Бот работает стабильно 24/7!');
 });
 
-// Запускаем сервер
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`✅ Сервер запущен на порту ${PORT}`);
@@ -48,7 +47,7 @@ app.listen(PORT, () => {
 // 2. ОСНОВНЫЕ КОМАНДЫ БОТА
 // ==========================================
 
-// Прием данных, когда клиент нажимает кнопку внутри мини-приложения
+// Прием данных из мини-приложения
 bot.on('web_app_data', async (msg) => {
     try {
         const data = msg.web_app_data.data;
@@ -58,8 +57,31 @@ bot.on('web_app_data', async (msg) => {
     }
 });
 
-// Команда СТАРТ
-bot.onText(/\/start/, (msg) => {
+// КОМАНДА /START (С РЕФЕРАЛЬНОЙ СИСТЕМОЙ)
+bot.onText(/\/start(?: (.+))?/, async (msg, match) => {
+    const tgId = String(msg.from.id);
+    const referrerId = match[1]; // Достаем ID того, кто пригласил (если есть)
+
+    // Если человек перешел по ссылке друга (и это не он сам)
+    if (referrerId && referrerId !== tgId) {
+        try {
+            // Проверяем, есть ли этот новый клиент уже в базе
+            const { data: existing } = await supabase.from('clients').select('tg_id').eq('tg_id', tgId).single();
+            if (!existing) {
+                // Если нет — сохраняем его и записываем, кто его пригласил
+                await supabase.from('clients').insert({ 
+                    tg_id: tgId, 
+                    referred_by: referrerId,
+                    name: msg.from.first_name || 'Клиент',
+                    username: msg.from.username || ''
+                });
+                console.log(`Новый клиент ${tgId} пришел от ${referrerId}`);
+            }
+        } catch (e) {
+            console.error("Ошибка рефералки:", e.message);
+        }
+    }
+
     bot.sendMessage(msg.chat.id, `Привет, ${msg.from.first_name}! 🌸\n\nДобро пожаловать в сервис "ЧистоВера".\nМы берем на себя заботу о чистоте вашего дома.\n\nИспользуйте кнопку меню ниже, чтобы открыть приложение.`);
 });
 
@@ -74,7 +96,7 @@ bot.on('callback_query', async (query) => {
     const tgId = String(query.from.id);
 
     try {
-        // 1. Проверяем АВАРИЙНЫЙ РУБИЛЬНИК (вдруг идут тех. работы)
+        // 1. Проверяем АВАРИЙНЫЙ РУБИЛЬНИК
         const { data: sys } = await supabase.from('app_settings').select('is_paused').eq('id', 1).single();
         if (sys && sys.is_paused) {
             return bot.answerCallbackQuery(query.id, { text: "🛠 Идут технические работы. Бот временно остановлен.", show_alert: true });
@@ -86,16 +108,13 @@ bot.on('callback_query', async (query) => {
 
         // ЕСЛИ КЛИЕНТ НАЖАЛ "ВЫСТАВИЛ ПАКЕТЫ"
         if (data === 'trash_yes') {
-            // Проверка лимита (если тариф 5 дней)
             if (client.sub_type === '5days' && client.weekly_clicks >= 5) {
                 return bot.answerCallbackQuery(query.id, { text: "⚠️ Ваш лимит (5 из 5) на этой неделе исчерпан!", show_alert: true });
             }
 
-            // Обновляем базу
             const newClicks = client.weekly_clicks + 1;
             await supabase.from('clients').update({ trash_out_today: true, weekly_clicks: newClicks }).eq('tg_id', tgId);
 
-            // Меняем текст старого сообщения
             await bot.editMessageText(`✅ **Принято!** Курьер заедет за вашими пакетами.`, {
                 chat_id: chatId, message_id: messageId, parse_mode: 'Markdown'
             });
@@ -114,7 +133,7 @@ bot.on('callback_query', async (query) => {
 
     } catch (e) {
         console.error("Ошибка обработки Inline-кнопки:", e.message);
-        bot.answerCallbackQuery(query.id, { text: "Произошла ошибка базы данных. Попробуйте через приложение." });
+        bot.answerCallbackQuery(query.id, { text: "Произошла ошибка. Попробуйте через приложение." });
     }
 });
 
@@ -124,22 +143,20 @@ bot.on('callback_query', async (query) => {
 // ==========================================
 setInterval(async () => {
     try {
-        // 1. ПРОВЕРКА РУБИЛЬНИКА (Если пауза - таймер вообще ничего не делает)
+        // 1. ПРОВЕРКА РУБИЛЬНИКА
         const { data: sys } = await supabase.from('app_settings').select('is_paused').eq('id', 1).single();
         if (sys && sys.is_paused) return; 
 
         // 2. РАСЧЕТ ВРЕМЕНИ
         const now = new Date();
-        const targetDate = new Date(now.getTime() + 30 * 60000); // Ровно +30 минут
+        const targetDate = new Date(now.getTime() + 30 * 60000); 
         
-        // Время в формате "ЧЧ:ММ" по Москве
         const targetTimeStr = targetDate.toLocaleTimeString('ru-RU', {
             timeZone: 'Europe/Moscow',
             hour: '2-digit',
             minute: '2-digit'
         });
 
-        // Сегодняшняя дата по Москве
         const todayStr = new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Moscow' });
 
         // 3. ДОСТАЕМ КЛИЕНТОВ НА ЭТО ВРЕМЯ
@@ -152,18 +169,12 @@ setInterval(async () => {
         // 4. РАССЫЛКА УВЕДОМЛЕНИЙ
         if (clientsToRemind && clientsToRemind.length > 0) {
             for (const client of clientsToRemind) {
-                // Если дата подписки истекла
                 if (client.sub_end_date && client.sub_end_date < todayStr) continue;
-                
-                // Если он уже нажал кнопку "Выставил" сегодня
                 if (client.trash_out_today) continue;
-                
-                // Если у него тариф 5 дней и он исчерпал лимит
                 if (client.sub_type === '5days' && client.weekly_clicks >= 5) continue;
 
                 const msgText = `🔔 <b>Напоминание от ЧистоВера!</b>\n\nЧерез 30 минут (в ${client.schedule}) приедет курьер за вашим мусором.\n\nПожалуйста, выставьте пакеты за дверь и нажмите кнопку ниже:`;
                 
-                // Кнопки под сообщением
                 const keyboard = {
                     inline_keyboard: [
                         [{ text: '✅ Выставил пакеты', callback_data: 'trash_yes' }],
@@ -184,11 +195,9 @@ setInterval(async () => {
         const moscowTime = new Date(now.toLocaleString("en-US", { timeZone: "Europe/Moscow" }));
         
         if (moscowTime.getHours() === 0 && moscowTime.getMinutes() === 0) {
-            // Сбрасываем галочки у всех каждую ночь
             await supabase.from('clients').update({ trash_out_today: false, trash_not_found: false }).neq('tg_id', '0');
             console.log("✅ Ежедневный сброс выполнен");
 
-            // Если сегодня Понедельник (1), сбрасываем недельные лимиты
             if (moscowTime.getDay() === 1) { 
                 await supabase.from('clients').update({ weekly_clicks: 0 }).eq('sub_type', '5days');
                 console.log("✅ Еженедельный сброс лимитов выполнен");
@@ -197,4 +206,4 @@ setInterval(async () => {
     } catch (e) {
         console.error("Ошибка в таймере:", e.message);
     }
-}, 60000); // Таймер крутится каждую минуту (60 000 миллисекунд)
+}, 60000);
